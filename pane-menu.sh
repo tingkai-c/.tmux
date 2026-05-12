@@ -7,10 +7,22 @@
 # Usage:
 #   pane-menu.sh <target-pane-id> [selected-index] [action]
 
-menu="$HOME/.config/tmux/pane-menu.sh"
+config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+menu="$config_home/tmux/pane-menu.sh"
 pane=${1:-}
 choice=${2:-0}
 action=${3:-}
+
+shell_quote() {
+  quoted=$(printf '%s\n' "$1" | sed "s/'/'\\\\''/g")
+  printf "'%s'" "$quoted"
+}
+
+menu_command() {
+  selected=$1
+  next_action=$2
+  printf 'run-shell -b "%s %s %s %s"' "$menu_arg" "$pane_arg" "$selected" "$next_action"
+}
 
 if [ -z "$pane" ]; then
   pane=$(tmux display-message -p '#{pane_id}')
@@ -54,21 +66,24 @@ case "$action" in
   done) exit 0 ;;
 esac
 
+menu_arg=$(shell_quote "$menu")
+pane_arg=$(shell_quote "$pane")
+
 # Choice indexes are zero-based and include separators.
 tmux display-menu -t "$pane" -T "Pane Menu" -C "$choice" \
-  "Wider"  l "run-shell -b '$menu $pane 0 wider'" \
-  "Narrower" h "run-shell -b '$menu $pane 1 narrower'" \
-  "Taller" k "run-shell -b '$menu $pane 2 taller'" \
-  "Shorter" j "run-shell -b '$menu $pane 3 shorter'" \
+  "Wider"  l "$(menu_command 0 wider)" \
+  "Narrower" h "$(menu_command 1 narrower)" \
+  "Taller" k "$(menu_command 2 taller)" \
+  "Shorter" j "$(menu_command 3 shorter)" \
   "" \
-  "Left/Right Layout"  "|" "run-shell -b '$menu $pane 5 even-horizontal'" \
-  "Top/Bottom Layout" "-" "run-shell -b '$menu $pane 6 even-vertical'" \
-  "Tiled Layout"      t "run-shell -b '$menu $pane 7 tiled'" \
-  "Main Left"         L "run-shell -b '$menu $pane 8 main-vertical'" \
-  "Main Top"          T "run-shell -b '$menu $pane 9 main-horizontal'" \
+  "Left/Right Layout"  "|" "$(menu_command 5 even-horizontal)" \
+  "Top/Bottom Layout" "-" "$(menu_command 6 even-vertical)" \
+  "Tiled Layout"      t "$(menu_command 7 tiled)" \
+  "Main Left"         L "$(menu_command 8 main-vertical)" \
+  "Main Top"          T "$(menu_command 9 main-horizontal)" \
   "" \
-  "Swap Up"   u "run-shell -b '$menu $pane 11 swap-up'" \
-  "Swap Down" d "run-shell -b '$menu $pane 12 swap-down'" \
-  "Zoom"      z "run-shell -b '$menu $pane 13 zoom'" \
+  "Swap Up"   u "$(menu_command 11 swap-up)" \
+  "Swap Down" d "$(menu_command 12 swap-down)" \
+  "Zoom"      z "$(menu_command 13 zoom)" \
   "" \
-  "Done"      q "run-shell -b '$menu $pane 15 done'"
+  "Done"      q "$(menu_command 15 done)"
