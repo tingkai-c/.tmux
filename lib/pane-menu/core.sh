@@ -75,16 +75,38 @@ pane_menu_render_preview() {
     function text(x, y, s,    i) {
       for (i = 1; i <= length(s); i++) put(x + i - 1, y, substr(s, i, 1))
     }
+    function color_text(x, y, visible,    i, cell) {
+      for (i = 1; i <= length(visible); i++) {
+        cell = substr(visible, i, 1)
+        if (i == 1) cell = red_start cell
+        if (i == length(visible)) cell = cell reset
+        put(x + i - 1, y, cell)
+      }
+    }
+    function label_pane(x1, y1, x2, y2, pane_label, selected_label,    interior_w, interior_h, label_len, label_x, label_y) {
+      interior_w = x2 - x1 - 1
+      interior_h = y2 - y1 - 1
+      label_len = length(pane_label)
+      if (interior_w < label_len || interior_h < 1) return
+      label_x = x1 + 1 + int((interior_w - label_len) / 2)
+      label_y = y1 + 1 + int((interior_h - 1) / 2)
+      if (selected_label) color_text(label_x, label_y, pane_label)
+      else text(label_x, label_y, pane_label)
+    }
     {
       n++
       id[n] = $1; idx[n] = $2; left[n] = $3 + 0; top[n] = $4 + 0
-      width[n] = max($5 + 0, 1); height[n] = max($6 + 0, 1); active[n] = $7
+      width[n] = max($5 + 0, 1); height[n] = max($6 + 0, 1)
       max_x = max(max_x, left[n] + width[n]); max_y = max(max_y, top[n] + height[n])
     }
     END {
       if (n == 0) { print "(no panes)"; exit }
       if (max_x < 1) max_x = 1
       if (max_y < 1) max_y = 1
+      if (out_w < 1) out_w = 1
+      if (out_h < 1) out_h = 1
+      red_start = sprintf("%c[1;31m", 27)
+      reset = sprintf("%c[0m", 27)
       for (y = 1; y <= out_h; y++) for (x = 1; x <= out_w; x++) canvas[y, x] = " "
 
       for (i = 1; i <= n; i++) {
@@ -96,14 +118,17 @@ pane_menu_render_preview() {
         if (y2 <= y1) y2 = y1 + 1
         if (x2 > out_w) x2 = out_w
         if (y2 > out_h) y2 = out_h
-        h = (id[i] == selected ? "#" : "-")
-        v = (id[i] == selected ? "#" : "|")
-        c = (id[i] == selected ? "#" : "+")
+        h = "-"
+        v = "|"
+        c = "+"
         for (x = x1; x <= x2; x++) { put(x, y1, h); put(x, y2, h) }
         for (y = y1; y <= y2; y++) { put(x1, y, v); put(x2, y, v) }
         put(x1, y1, c); put(x2, y1, c); put(x1, y2, c); put(x2, y2, c)
-        label = " " idx[i] (active[i] == "1" ? "*" : " ")
-        text(x1 + 1, y1 + 1, label)
+        if (id[i] == selected) {
+          label_pane(x1, y1, x2, y2, "[[" idx[i] "]]", 1)
+        } else {
+          label_pane(x1, y1, x2, y2, "[" idx[i] "]", 0)
+        }
       }
 
       for (y = 1; y <= out_h; y++) {
@@ -174,6 +199,9 @@ pane_menu_action() {
     shorter)
       pane_menu_resize_abs "$pane_id" height -2
       ;;
+    resize-height|resize-width)
+      pane_menu_tmux display-message 'Use + or - to adjust the selected pane size' 2>/dev/null || true
+      ;;
     *)
       pane_menu_tmux display-message "Unknown pane menu action: $action" 2>/dev/null || true
       return 1
@@ -187,6 +215,8 @@ pane_menu_action_name() {
     remove) printf 'Remove pane' ;;
     split-vertical) printf 'Split vertical (left/right)' ;;
     split-horizontal) printf 'Split horizontal (top/bottom)' ;;
+    resize-height) printf 'Adjust height (+/-)' ;;
+    resize-width) printf 'Adjust width (+/-)' ;;
     taller) printf 'Taller' ;;
     shorter) printf 'Shorter' ;;
     wider) printf 'Wider' ;;
@@ -201,14 +231,12 @@ pane_menu_action_at() {
     1) printf 'remove' ;;
     2) printf 'split-vertical' ;;
     3) printf 'split-horizontal' ;;
-    4) printf 'taller' ;;
-    5) printf 'shorter' ;;
-    6) printf 'wider' ;;
-    7) printf 'narrower' ;;
+    4) printf 'resize-height' ;;
+    5) printf 'resize-width' ;;
     *) return 1 ;;
   esac
 }
 
 pane_menu_action_count() {
-  printf '8\n'
+  printf '6\n'
 }
