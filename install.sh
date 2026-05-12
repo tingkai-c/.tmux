@@ -33,4 +33,4 @@ if [ -x "$tpm_dir/bin/install_plugins" ]; then
 fi
 
 echo "Install/update complete. New tmux servers will load $config_src."
-echo "Existing tmux servers are not reloaded automatically because this config intentionally destroys unattached sessions."
+echo "Existing tmux servers are not reloaded automatically; restart or source the config when ready."
