@@ -33,6 +33,88 @@ visible_max_width() {
   printf '%s\n' "$1" | strip_ansi | awk '{ if (length($0) > max) max = length($0) } END { print max + 0 }'
 }
 
+first_nonempty_line() {
+  awk 'length($0) > 0 { print; exit }'
+}
+
+final_screen() {
+  awk -v esc="$(printf '\033')" '
+    BEGIN { row = 1; col = 1; max_row = 1 }
+    {
+      s = $0
+      i = 1
+      while (i <= length(s)) {
+        ch = substr(s, i, 1)
+        if (ch == esc) {
+          rest = substr(s, i + 1)
+          if (match(rest, /^\[[0-9;?]*[A-Za-z]/)) {
+            seq = substr(rest, 1, RLENGTH)
+            final = substr(seq, length(seq), 1)
+            if (final == "H") {
+              body = substr(seq, 2, length(seq) - 2)
+              split(body, parts, ";")
+              row = parts[1] == "" ? 1 : parts[1] + 0
+              col = parts[2] == "" ? 1 : parts[2] + 0
+              if (row < 1) row = 1
+              if (col < 1) col = 1
+            }
+            if (final == "J") {
+              for (r = row; r <= 200; r++) {
+                start = (r == row ? col : 1)
+                for (c = start; c <= 200; c++) delete canvas[r, c]
+              }
+            }
+            i += RLENGTH + 1
+            continue
+          }
+        }
+        canvas[row, col] = ch
+        col++
+        i++
+      }
+      if (row > max_row) max_row = row
+      row++
+      col = 1
+    }
+    END {
+      for (r = 1; r <= max_row; r++) {
+        line = ""
+        for (c = 1; c <= 200; c++) line = line ((r, c) in canvas ? canvas[r, c] : " ")
+        sub(/[ ]+$/, "", line)
+        print line
+      }
+    }
+  '
+}
+
+count_occurrences() {
+  haystack=$1
+  needle=$2
+  printf '%s\n' "$haystack" | grep -F -- "$needle" | wc -l | tr -d ' '
+}
+
+assert_render_screen_buffered() {
+  awk '
+    /tmp_frame=\$\{TMPDIR:-\/tmp\}\/pane-menu-frame-\$\$\.txt/ { has_tmp_frame = 1 }
+    /^cleanup\(\) / { in_cleanup = 1 }
+    in_cleanup && /rm -f "\$tmp_model" "\$tmp_frame"/ { cleanup_frame = 1 }
+    in_cleanup && /^}/ { in_cleanup = 0 }
+    /^render_screen\(\) / { in_render = 1; next }
+    in_render && /^}/ { in_render = 0 }
+    in_render && /\} > "\$tmp_frame"/ { compose = NR }
+    in_render && /top_margin=1/ { top_margin = NR }
+    in_render && /while \[ "\$frame_lines" -lt "\$drawable_h" \]/ { pad = NR }
+    in_render && /printf '\''\\033\[H\\033\[J\\033\[2;1H'\''/ { home = NR }
+    in_render && /cat "\$tmp_frame"/ { cat = NR }
+    END {
+      if (!has_tmp_frame || !cleanup_frame || !top_margin || !compose || !pad || !home || !cat) exit 1
+      if (!(top_margin < compose && compose < pad && pad < home && home < cat && cat == home + 1)) exit 1
+    }
+  ' "$script" || fail 'render_screen should compose and pad a complete temp frame before cursor-home immediate cat'
+}
+
+assert_render_screen_buffered
+
 # Renderer fixture checks.
 out=$($script --render-fixture "$repo_dir/tests/fixtures/single.tsv" '%1')
 assert_contains "$out" '[[1]]' 'single fixture should label selected pane index 1 with double brackets'
@@ -97,13 +179,35 @@ rm -f /tmp/pane-menu-model-$$.txt
 assert_contains "$model" "$space_dir" 'model should include pane_current_path with spaces'
 
 pane1=$(PANE_MENU_TMUX_SOCKET="$sock" $script --pane-for-index 1)
-printf q | PANE_MENU_TMUX_SOCKET="$sock" PANE_MENU_SCREEN_WIDTH=44 PANE_MENU_SCREEN_HEIGHT=12 $script --popup "$pane1" 0 >/tmp/pane-menu-popup-$$.txt
+printf q | PANE_MENU_TMUX_SOCKET="$sock" PANE_MENU_SCREEN_WIDTH=44 PANE_MENU_SCREEN_HEIGHT=13 $script --popup "$pane1" 0 >/tmp/pane-menu-popup-$$.txt
 popup_out=$(cat /tmp/pane-menu-popup-$$.txt)
 assert_contains "$popup_out" '[[1]]' 'popup loop should render selected pane label before quit'
+popup_screen=$(printf '%s\n' "$popup_out" | final_screen | strip_ansi)
+first_visible_line=$(printf '%s\n' "$popup_screen" | first_nonempty_line)
+case "$first_visible_line" in
+  *+*-*+*) ;;
+  *) fail 'popup redraw should start with the preview top border after cursor-home redraw' ;;
+esac
 assert_not_contains "$popup_out" 'Pane Menu — preview + keyboard MVP' 'popup should not render MVP title text'
 assert_not_contains "$popup_out" '#' 'popup should not use hash borders'
 max_width=$(visible_max_width "$popup_out")
 [ "$max_width" -le 44 ] || fail 'tiny popup output should stay within requested visible width'
+printf xq | PANE_MENU_TMUX_SOCKET="$sock" PANE_MENU_SCREEN_WIDTH=44 PANE_MENU_SCREEN_HEIGHT=12 $script --popup "$pane1" 0 >/tmp/pane-menu-popup-$$.txt
+popup_out=$(cat /tmp/pane-menu-popup-$$.txt)
+render_count=$(count_occurrences "$popup_out" 'Selected pane:')
+[ "$render_count" -eq 1 ] || fail 'unknown popup key should not trigger an extra render'
+printf jq | PANE_MENU_TMUX_SOCKET="$sock" PANE_MENU_SCREEN_WIDTH=44 PANE_MENU_SCREEN_HEIGHT=12 $script --popup "$pane1" 0 >/tmp/pane-menu-popup-$$.txt
+popup_out=$(cat /tmp/pane-menu-popup-$$.txt)
+render_count=$(count_occurrences "$popup_out" 'Selected pane:')
+[ "$render_count" -eq 2 ] || fail 'navigation popup key should still trigger a state-changing render'
+popup_screen=$(printf '%s\n' "$popup_out" | final_screen | strip_ansi)
+final_selected_count=$(count_occurrences "$popup_screen" 'Selected pane:')
+[ "$final_selected_count" -eq 1 ] || fail 'final popup screen should not leave duplicate Selected pane rows after redraw'
+first_visible_line=$(printf '%s\n' "$popup_screen" | first_nonempty_line)
+case "$first_visible_line" in
+  *+*-*+*) ;;
+  *) fail 'final popup screen should preserve the preview top border after redraw' ;;
+esac
 printf q | PANE_MENU_TMUX_SOCKET="$sock" PANE_MENU_SCREEN_WIDTH=140 PANE_MENU_SCREEN_HEIGHT=50 $script --popup "$pane1" 0 >/tmp/pane-menu-popup-$$.txt
 popup_out=$(cat /tmp/pane-menu-popup-$$.txt)
 max_width=$(visible_max_width "$popup_out")
@@ -118,6 +222,15 @@ pane2=$(tmux -L "$sock" list-panes -F '#{pane_id}' | sed -n '2p')
 PANE_MENU_TMUX_SOCKET="$sock" $script --action "$pane2" split-horizontal
 count=$(tmux -L "$sock" list-panes | wc -l | tr -d ' ')
 [ "$count" -eq 3 ] || fail 'split-horizontal should create a third pane'
+pane3=$(tmux -L "$sock" list-panes -F '#{pane_id}' | sed -n '3p')
+
+tmux -L "$sock" select-pane -t "$pane1"
+printf '\rq' | PANE_MENU_TMUX_SOCKET="$sock" PANE_MENU_SCREEN_WIDTH=80 PANE_MENU_SCREEN_HEIGHT=24 $script --popup "$pane3" 0 >/tmp/pane-menu-popup-$$.txt
+popup_out=$(cat /tmp/pane-menu-popup-$$.txt)
+active_after_select=$(tmux -L "$sock" display-message -p '#{pane_id}')
+[ "$active_after_select" = "$pane3" ] || fail 'Enter on select action should focus the selected pane'
+render_count=$(count_occurrences "$popup_out" 'Selected pane:')
+[ "$render_count" -eq 2 ] || fail 'Enter on select action should trigger a state-changing render'
 
 before=$(tmux -L "$sock" display-message -p -t "$pane1" '#{pane_width}')
 PANE_MENU_TMUX_SOCKET="$sock" $script --action "$pane1" narrower
@@ -130,8 +243,11 @@ height_after=$(tmux -L "$sock" display-message -p -t "$pane1" '#{pane_height}')
 
 width_before=$(tmux -L "$sock" display-message -p -t "$pane1" '#{pane_width}')
 printf -- '-q' | PANE_MENU_TMUX_SOCKET="$sock" PANE_MENU_SCREEN_WIDTH=80 PANE_MENU_SCREEN_HEIGHT=24 $script --popup "$pane1" 5 >/tmp/pane-menu-popup-$$.txt
+popup_out=$(cat /tmp/pane-menu-popup-$$.txt)
 width_after=$(tmux -L "$sock" display-message -p -t "$pane1" '#{pane_width}')
 [ "$width_after" -lt "$width_before" ] || fail 'selected adjust-width action with - should decrease selected pane width'
+render_count=$(count_occurrences "$popup_out" 'Selected pane:')
+[ "$render_count" -eq 2 ] || fail 'selected adjust-width action should trigger a state-changing render'
 width_before_enter=$(tmux -L "$sock" display-message -p -t "$pane1" '#{pane_width}')
 printf '\rq' | PANE_MENU_TMUX_SOCKET="$sock" PANE_MENU_SCREEN_WIDTH=80 PANE_MENU_SCREEN_HEIGHT=24 $script --popup "$pane1" 5 >/tmp/pane-menu-popup-$$.txt
 width_after_enter=$(tmux -L "$sock" display-message -p -t "$pane1" '#{pane_width}')

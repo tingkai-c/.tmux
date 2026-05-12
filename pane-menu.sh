@@ -17,8 +17,9 @@ choice=${2:-0}
 action=${3:-}
 
 tmp_model=${TMPDIR:-/tmp}/pane-menu-model-$$.tsv
+tmp_frame=${TMPDIR:-/tmp}/pane-menu-frame-$$.txt
 cleanup() {
-  rm -f "$tmp_model"
+  rm -f "$tmp_model" "$tmp_frame"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -116,7 +117,9 @@ print_centered() {
   visible=$(visible_width "$line")
   pad=$(( (width - visible) / 2 ))
   [ "$pad" -lt 0 ] && pad=0
-  printf '%*s%s\n' "$pad" '' "$line"
+  right_pad=$(( width - pad - visible ))
+  [ "$right_pad" -lt 0 ] && right_pad=0
+  printf '%*s%s%*s\n' "$pad" '' "$line" "$right_pad" ''
 }
 
 render_actions() {
@@ -141,53 +144,71 @@ render_screen() {
   selected_action=$2
   pane_menu_model > "$tmp_model"
   detect_screen_size
+  top_margin=1
+  drawable_h=$((screen_h - top_margin))
+  [ "$drawable_h" -lt 1 ] && drawable_h=1
   reserved_rows=9
   avail_w=$((screen_w - 4))
   [ "$avail_w" -lt 1 ] && avail_w=1
   preview_w=$avail_w
   [ "$preview_w" -gt 100 ] && preview_w=100
-  avail_h=$((screen_h - reserved_rows))
+  avail_h=$((drawable_h - reserved_rows))
   [ "$avail_h" -lt 1 ] && avail_h=1
   preview_h=$avail_h
   [ "$preview_h" -gt 30 ] && preview_h=30
   PANE_MENU_PREVIEW_WIDTH=$preview_w
   PANE_MENU_PREVIEW_HEIGHT=$preview_h
 
-  clear 2>/dev/null || printf '\033[H\033[2J'
-  pane_menu_render_preview "$tmp_model" "$selected_pane" | while IFS= read -r line; do
-    print_centered "$screen_w" "$line"
+  {
+    pane_menu_render_preview "$tmp_model" "$selected_pane" | while IFS= read -r line; do
+      print_centered "$screen_w" "$line"
+    done
+    selected_index=$(pane_menu_pane_index_for_id "$selected_pane" 2>/dev/null || printf '?')
+    printf '\n'
+    print_centered "$screen_w" "Selected pane: [$selected_index] ($selected_pane)"
+    print_centered "$screen_w" 'Nums:pane +/-:resize Enter:run q:quit'
+    render_actions "$selected_action" "$screen_w"
+  } > "$tmp_frame"
+  frame_lines=$(wc -l < "$tmp_frame" | tr -d ' ')
+  while [ "$frame_lines" -lt "$drawable_h" ]; do
+    printf '%*s\n' "$screen_w" '' >> "$tmp_frame"
+    frame_lines=$((frame_lines + 1))
   done
-  selected_index=$(pane_menu_pane_index_for_id "$selected_pane" 2>/dev/null || printf '?')
-  printf '\n'
-  print_centered "$screen_w" "Selected pane: [$selected_index] ($selected_pane)"
-  print_centered "$screen_w" 'Nums:pane +/-:resize Enter:run q:quit'
-  render_actions "$selected_action" "$screen_w"
+
+  printf '\033[H\033[J\033[2;1H'
+  cat "$tmp_frame"
 }
 
 popup_loop() {
   selected_pane=$(pane_menu_selected_or_active "${1:-}")
   selected_action=${2:-0}
   action_count=$(pane_menu_action_count)
+  needs_render=1
 
   while :; do
-    render_screen "$selected_pane" "$selected_action"
+    if [ "$needs_render" -eq 1 ]; then
+      render_screen "$selected_pane" "$selected_action"
+      needs_render=0
+    fi
     key=$(read_key)
     case "$key" in
       up)
         selected_action=$((selected_action - 1))
         [ "$selected_action" -lt 0 ] && selected_action=$((action_count - 1))
+        needs_render=1
         ;;
       down)
         selected_action=$((selected_action + 1))
         [ "$selected_action" -ge "$action_count" ] && selected_action=0
+        needs_render=1
         ;;
       increase|decrease)
         act=$(pane_menu_action_at "$selected_action") || act=select
         case "$act:$key" in
-          resize-height:increase) pane_menu_resize_abs "$selected_pane" height 2 ;;
-          resize-height:decrease) pane_menu_resize_abs "$selected_pane" height -2 ;;
-          resize-width:increase) pane_menu_resize_abs "$selected_pane" width 5 ;;
-          resize-width:decrease) pane_menu_resize_abs "$selected_pane" width -5 ;;
+          resize-height:increase) pane_menu_resize_abs "$selected_pane" height 2; needs_render=1 ;;
+          resize-height:decrease) pane_menu_resize_abs "$selected_pane" height -2; needs_render=1 ;;
+          resize-width:increase) pane_menu_resize_abs "$selected_pane" width 5; needs_render=1 ;;
+          resize-width:decrease) pane_menu_resize_abs "$selected_pane" width -5; needs_render=1 ;;
           *) pane_menu_tmux display-message 'Select Adjust height/width before using + or -' 2>/dev/null || true ;;
         esac
         ;;
@@ -195,6 +216,7 @@ popup_loop() {
         idx=${key#pane:}
         if new_pane=$(pane_menu_pane_id_for_index "$idx" 2>/dev/null); then
           selected_pane=$new_pane
+          needs_render=1
         else
           pane_menu_tmux display-message "No pane numbered $idx" 2>/dev/null || true
         fi
@@ -208,6 +230,7 @@ popup_loop() {
             ;;
         esac
         if pane_menu_action "$selected_pane" "$act"; then
+          needs_render=1
           case "$act" in
             remove)
               selected_pane=$(pane_menu_selected_or_active "" 2>/dev/null || true)
@@ -219,6 +242,7 @@ popup_loop() {
           esac
         else
           sleep 1
+          needs_render=1
         fi
         ;;
       quit)
