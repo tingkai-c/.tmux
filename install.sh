@@ -8,6 +8,8 @@ target_dir="$xdg_config_home/tmux"
 legacy_config="$HOME/.tmux.conf"
 config_src="$repo_dir/tmux.conf"
 pane_menu_src="$repo_dir/pane-menu.sh"
+pane_menu_lib_dir="$repo_dir/lib/pane-menu"
+pane_menu_core_src="$pane_menu_lib_dir/core.sh"
 plugins_dir="$repo_dir/plugins"
 tpm_dir="$plugins_dir/tpm"
 
@@ -39,6 +41,7 @@ is_managed_checkout() {
   [ -x "$checkout/install.sh" ] || return 1
   [ -f "$checkout/tmux.conf" ] || return 1
   [ -x "$checkout/pane-menu.sh" ] || return 1
+  [ -f "$checkout/lib/pane-menu/core.sh" ] || return 1
 
   checkout_remote=$(git_remote "$checkout")
   [ -n "$checkout_remote" ] || return 1
@@ -83,6 +86,22 @@ if [ ! -x "$pane_menu_src" ]; then
   echo "pane menu script not executable: $pane_menu_src" >&2
   exit 1
 fi
+
+if [ ! -f "$pane_menu_core_src" ]; then
+  echo "pane menu core module not found: $pane_menu_core_src" >&2
+  exit 1
+fi
+
+for helper in "$pane_menu_lib_dir"/*.sh; do
+  [ -e "$helper" ] || {
+    echo "pane menu helper modules not found in: $pane_menu_lib_dir" >&2
+    exit 1
+  }
+  sh -n "$helper" || {
+    echo "pane menu helper has shell syntax errors: $helper" >&2
+    exit 1
+  }
+done
 
 if [ -e "$legacy_config" ] || [ -L "$legacy_config" ]; then
   backup=$(backup_path "$legacy_config")
